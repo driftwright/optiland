@@ -89,9 +89,10 @@ def _track_started_interactors():
     """Substitute a recording interactor for the duration of the block.
 
     VTK classes are immutable, so their ``Start`` method cannot be patched
-    in place. The viewers import ``vtk`` lazily, so replacing the module
-    attribute makes every interactor built inside the block a subclass that
-    records ``Start`` calls instead of blocking.
+    in place. The viewers import ``vtk`` lazily, so replacing the class on
+    the ``vtk`` module itself makes every interactor built inside the block
+    -- including those created after a local ``import vtk`` -- a subclass
+    that records ``Start`` calls instead of blocking.
     """
     started = []
 
@@ -99,19 +100,7 @@ def _track_started_interactors():
         def Start(self):
             started.append(self)
 
-    class _VtkProxy:
-        def __getattr__(self, name):
-            if name == "vtkRenderWindowInteractor":
-                return _RecordingInteractor
-            return getattr(vtk, name)
-
-    modules = [
-        __import__("optiland.visualization.system.optic_viewer_3d", fromlist=["vtk"]),
-        __import__("optiland.nonsequential.visualization.viewer_3d", fromlist=["vtk"]),
-    ]
-    with contextlib.ExitStack() as stack:
-        for module in modules:
-            stack.enter_context(patch.object(module, "vtk", _VtkProxy(), create=True))
+    with patch.object(vtk, "vtkRenderWindowInteractor", _RecordingInteractor):
         yield started
 
 
@@ -173,6 +162,30 @@ class TestBaseExportGltf:
         assert written == tmp_path / "scene.GLTF"
         assert written.exists()
 
+    def test_missing_parent_directory_raises(self, tmp_path):
+        """A path inside a missing directory fails instead of returning it."""
+        renderer = vtk.vtkRenderer()
+        source = vtk.vtkSphereSource()
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputConnection(source.GetOutputPort())
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        renderer.AddActor(actor)
+
+        window = vtk.vtkRenderWindow()
+        window.AddRenderer(renderer)
+        window.SetSize(64, 64)
+
+        target = tmp_path / "missing" / "x.gltf"
+        viewer = _ConcreteViewer3D(None)
+        try:
+            with pytest.raises(OSError, match="could not be written"):
+                viewer._export_gltf(window, target)
+        finally:
+            window.Finalize()
+
+        assert not target.exists()
+
 
 class TestOpticViewer3DGltfExport:
     """Tests for OpticViewer3D.export_gltf."""
@@ -197,8 +210,9 @@ class TestOpticViewer3DGltfExport:
         _assert_inline_buffers(gltf)
 
         modes = _modes(gltf)
-        # Three lens bodies plus the image plane are triangle meshes.
-        assert modes.count(TRIANGLES) >= 3
+        # The Cooke triplet has three lens bodies, plus the image plane: four
+        # triangle meshes in total.
+        assert modes.count(TRIANGLES) == 4
         # Ray paths are exported as line geometry.
         assert modes.count(LINES) > 0
 
@@ -229,27 +243,45 @@ class TestOpticViewer3DGltfExport:
         """The export uses a fresh offscreen window, not the viewer's."""
         started_windows = []
         real_init = vtk.vtkRenderWindow.__init__
+        real_set_size = vtk.vtkRenderWindow.SetSize
 
         class _RecordingWindow(vtk.vtkRenderWindow):
+            """Window reporting its real offscreen state."""
+
             def __init__(self):
                 real_init(self)
+                self.is_viewer_window = True
+                self.viewer_offscreen_calls = []
                 started_windows.append(self)
 
-            def GetOffScreenRendering(self):
-                return 1
+            def SetOffScreenRendering(self, value):
+                if self.is_viewer_window:
+                    self.viewer_offscreen_calls.append(value)
+                super().SetOffScreenRendering(value)
+
+        def _recording_set_size(window, *args):
+            # SetSize is called immediately after the export window is created.
+            window.is_viewer_window = False
+            return real_set_size(window, *args)
 
         with patch(
             "optiland.visualization.system.optic_viewer_3d.vtk.vtkRenderWindow",
             _RecordingWindow,
+        ), patch(
+            "optiland.visualization.system.optic_viewer_3d.vtk.vtkRenderWindow.SetSize",
+            _recording_set_size,
         ):
             viewer = OpticViewer3D(optic)
             viewer.export_gltf(tmp_path / "offscreen.gltf", num_rays=3)
 
         assert started_windows
-        for window in started_windows:
-            assert window.GetOffScreenRendering() == 1
-        # A fresh window is created for the export, not the viewer's own.
+        # The viewer's window is the first one; a fresh window is created for
+        # the export, and the viewer sets it offscreen right after creating it.
         assert len(started_windows) == 2
+        export_window = started_windows[-1]
+        assert export_window is not viewer.ren_win
+        assert export_window.viewer_offscreen_calls == [1]
+        assert export_window.GetOffScreenRendering() == 1
 
     def test_export_lens_material_alpha(self, tmp_path, optic):
         """Lens meshes keep VTK's translucent base color."""
@@ -295,7 +327,9 @@ class TestNSQViewer3DGltfExport:
 
         modes = _modes(gltf)
         assert modes.count(LINES) > 0
-        assert modes.count(TRIANGLES) >= 1
+        # The minimal NSQ scene has two triangle meshes: the lens body and the
+        # detector face. There is no image plane in a non-sequential scene.
+        assert modes.count(TRIANGLES) == 2
 
     def test_export_without_rays(self, tmp_path, scene):
         """num_rays=0 still writes meshes and a valid glTF 2.0 file."""
@@ -310,7 +344,7 @@ class TestNSQViewer3DGltfExport:
         modes = _modes(gltf)
         assert modes.count(LINES) == 0
         # The lens body and the detector face are triangle meshes.
-        assert modes.count(TRIANGLES) >= 2
+        assert modes.count(TRIANGLES) == 2
 
     def test_export_does_not_start_interactor(self, tmp_path, scene):
         """NSQ export never starts a VTK interactor."""

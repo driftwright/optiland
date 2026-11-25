@@ -257,6 +257,9 @@ class BaseViewer3D(BaseViewer, abc.ABC):
 
         Returns:
             The path of the file that was written.
+
+        Raises:
+            OSError: If the exporter failed to write the file.
         """
         from pathlib import Path  # noqa: PLC0415
 
@@ -273,6 +276,11 @@ class BaseViewer3D(BaseViewer, abc.ABC):
         exporter.SetFileName(str(path))
         exporter.InlineDataOn()
         exporter.Write()
+
+        if not path.is_file():
+            raise OSError(
+                f"glTF file {path} could not be written (missing parent directory?)"
+            )
 
         return path
 
