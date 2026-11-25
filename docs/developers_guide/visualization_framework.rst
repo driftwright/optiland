@@ -112,6 +112,35 @@ The `OpticViewer3D` class includes an optional **dark mode** for 3D plots, offer
 .. note::
    The image in the :ref:`developers_guide` shows an example of the dark mode 3D visualization output for a lithographic lens system.
 
+Export to glTF
+--------------
+
+The 3D scenes can also be written to a glTF 2.0 file for use in other 3D tools. Call
+``export_gltf`` on an ``OpticViewer3D`` (sequential systems) or an ``NSQViewer3D``
+(non-sequential scenes):
+
+.. code-block:: python
+
+   from optiland.samples.objectives import CookeTriplet
+   from optiland.visualization.system import OpticViewer3D
+
+   viewer = OpticViewer3D(CookeTriplet())
+   viewer.export_gltf("cooke.gltf")  # also works with path "cooke"
+
+The method returns the path of the file that was written. A ``.gltf`` suffix is added
+when the given path does not have one.
+
+- The output is a single, self-contained ``.gltf`` file: vertex data is inlined as
+  base64, so there is no sidecar ``.bin`` file. Binary ``.glb`` is not supported.
+- The scene is rendered in an offscreen window, so no window is opened and the export
+  works without a display.
+- Ray bundles are written as line geometry, and lens elements, mirrors and surfaces as
+  triangle meshes that keep their viewer colors.
+- ``dark_mode`` and the same optional arguments as ``view`` are accepted, for example
+  ``viewer.export_gltf("cooke.gltf", dark_mode=True, num_rays=8)``. For
+  ``NSQViewer3D`` the options are ``result``, ``num_rays``, ``figsize`` and
+  ``color_by``.
+
 How to Extend This
 ------------------
 

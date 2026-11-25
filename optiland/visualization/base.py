@@ -15,6 +15,8 @@ from abc import abstractmethod
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
 
@@ -241,6 +243,38 @@ class BaseViewer3D(BaseViewer, abc.ABC):
         interactor.SetInteractorStyle(vtk.vtkInteractorStyleTrackballCamera())
 
         return window, interactor
+
+    def _export_gltf(self, window, path: str | Path) -> Path:
+        """Write the contents of a VTK render window to a glTF 2.0 file.
+
+        The buffers are inlined as base64 data URIs so the resulting
+        ``.gltf`` file is self-contained (no sidecar ``.bin`` file). The
+        window is forced into offscreen rendering so no window is shown.
+
+        Args:
+            window: The ``vtkRenderWindow`` whose renderers are exported.
+            path: Output path. A ``.gltf`` suffix is appended when missing.
+
+        Returns:
+            The path of the file that was written.
+        """
+        from pathlib import Path  # noqa: PLC0415
+
+        import vtk  # type: ignore[import]  # noqa: PLC0415
+
+        path = Path(path)
+        if path.suffix.lower() != ".gltf":
+            path = path.with_name(path.name + ".gltf")
+
+        window.SetOffScreenRendering(1)
+
+        exporter = vtk.vtkGLTFExporter()
+        exporter.SetRenderWindow(window)
+        exporter.SetFileName(str(path))
+        exporter.InlineDataOn()
+        exporter.Write()
+
+        return path
 
     @abstractmethod
     def view(

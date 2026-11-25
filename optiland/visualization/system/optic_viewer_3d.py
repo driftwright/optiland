@@ -12,12 +12,17 @@ re-worked by Manuel Fragata Mendes, june 2025
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import vtk
 
 from optiland.visualization.base import BaseViewer3D
 from optiland.visualization.coloring.scale import collect_scales
 from optiland.visualization.system.rays import Rays3D
 from optiland.visualization.system.system import OpticalSystem
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class OpticViewer3D(BaseViewer3D):
@@ -141,3 +146,87 @@ class OpticViewer3D(BaseViewer3D):
 
         self.ren_win.Render()
         self.iren.Start()
+
+    def export_gltf(
+        self,
+        path: str | Path,
+        *,
+        dark_mode: bool = False,
+        **view_kwargs,
+    ) -> Path:
+        """Export the 3D scene to a self-contained glTF 2.0 file.
+
+        The scene is built exactly like :meth:`view` but rendered into a
+        fresh offscreen window, so no interactive window is opened. Lens
+        and mirror bodies are written as triangle meshes (keeping their
+        colors) and ray paths as line geometry. Buffers are inlined, so a
+        single ``.gltf`` file is produced without a sidecar ``.bin``.
+
+        Args:
+            path: Output path. A ``.gltf`` suffix is appended when missing.
+            dark_mode: Use the dark background if True. Defaults to False.
+            **view_kwargs: Optional arguments forwarded to the scene
+                builder, with the same meaning and defaults as in
+                :meth:`view`: ``fields`` (default ``'all'``), ``wavelengths``
+                (default ``'primary'``), ``num_rays`` (default 24),
+                ``distribution`` (default ``'ring'``), ``figsize`` (default
+                ``(1200, 800)``), ``reference`` (default None),
+                ``hide_vignetted`` (default False), ``component_colorizer``
+                (default None), ``ray_colorizer`` (default None) and
+                ``show_colorbar`` (default True).
+
+        Returns:
+            The path of the ``.gltf`` file that was written.
+        """
+        fields = view_kwargs.pop("fields", "all")
+        wavelengths = view_kwargs.pop("wavelengths", "primary")
+        num_rays = view_kwargs.pop("num_rays", 24)
+        distribution = view_kwargs.pop("distribution", "ring")
+        figsize = view_kwargs.pop("figsize", (1200, 800))
+        reference = view_kwargs.pop("reference", None)
+        hide_vignetted = view_kwargs.pop("hide_vignetted", False)
+        component_colorizer = view_kwargs.pop("component_colorizer", None)
+        ray_colorizer = view_kwargs.pop("ray_colorizer", None)
+        show_colorbar = view_kwargs.pop("show_colorbar", True)
+        if view_kwargs:
+            unexpected = ", ".join(sorted(view_kwargs))
+            raise TypeError(f"export_gltf() got unexpected keyword: {unexpected}")
+
+        renderer = self._make_renderer(dark_mode)
+
+        if ray_colorizer is not None:
+            ray_colorizer.prepare(self.optic)
+        self.rays.plot(
+            renderer,
+            fields=fields,
+            wavelengths=wavelengths,
+            num_rays=num_rays,
+            distribution=distribution,
+            reference=reference,
+            hide_vignetted=hide_vignetted,
+            _ray_colorizer=ray_colorizer,
+        )
+        self.system.plot(renderer, _component_colorizer=component_colorizer)
+        if show_colorbar:
+            self._add_scalar_bars(
+                renderer, collect_scales(component_colorizer, ray_colorizer)
+            )
+
+        window = vtk.vtkRenderWindow()
+        try:
+            window.SetOffScreenRendering(1)
+            window.AddRenderer(renderer)
+            window.SetSize(*figsize)
+
+            camera = renderer.GetActiveCamera()
+            camera.SetPosition(1, 0, 0)
+            camera.SetFocalPoint(0, 0, 0)
+            camera.SetViewUp(0, 1, 0)
+            renderer.ResetCamera()
+            camera.Elevation(0)
+            camera.Azimuth(150)
+
+            window.Render()
+            return self._export_gltf(window, path)
+        finally:
+            window.Finalize()
